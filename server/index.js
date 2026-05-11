@@ -3,37 +3,29 @@ const cors = require('cors')
 const multer = require('multer')
 const path = require('path')
 const fs = require('fs')
-const { execSync, exec } = require('child_process')
-const { promisify } = require('util')
 const { v4: uuidv4 } = require('uuid')
 
-const execAsync = promisify(exec)
-
 // ─── Paths (injected by Electron main or fallback for standalone dev) ─────────
-
-const UPLOADS_DIR = process.env.BSS_UPLOADS_DIR || path.join(__dirname, '..', 'uploads')
-const DATA_DIR    = process.env.BSS_DATA_DIR    || path.join(__dirname, '..', 'data')
-const PDFTOPPM    = process.env.BSS_PDFTOPPM    || 'pdftoppm'
-
-// Renderer build (served as static files)
+const UPLOADS_DIR   = process.env.BSS_UPLOADS_DIR || path.join(__dirname, '..', 'uploads')
+const DATA_DIR      = process.env.BSS_DATA_DIR    || path.join(__dirname, '..', 'data')
 const RENDERER_DIST = path.join(__dirname, '..', 'renderer', 'dist')
+
+// Standard fonts path for pdfjs-dist (bundled with the package)
+const STANDARD_FONTS_DIR = path.join(__dirname, '..', 'node_modules', 'pdfjs-dist', 'standard_fonts') + path.sep
 
 for (const dir of [UPLOADS_DIR, DATA_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 }
 
 // ─── JSON "database" ──────────────────────────────────────────────────────────
-
 const DB_FILE     = path.join(DATA_DIR, 'db.json')
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json')
-
 function readDb() {
   if (!fs.existsSync(DB_FILE)) return { statements: [], regions: [], transactions: [] }
   try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) }
   catch { return { statements: [], regions: [], transactions: [] } }
 }
 function writeDb(data) { fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2)) }
-
 function readSettings() {
   const defaults = { aiProvider: 'openai', apiKey: '', ollamaUrl: 'http://localhost:11434', ollamaModel: 'llava', defaultExportFormat: 'combined' }
   if (!fs.existsSync(CONFIG_FILE)) return defaults
@@ -43,43 +35,106 @@ function readSettings() {
 function writeSettings(s) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(s, null, 2)) }
 
 // ─── Express app ──────────────────────────────────────────────────────────────
-
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '50mb' }))
 app.use('/uploads', express.static(UPLOADS_DIR))
-
-// Serve built renderer
 if (fs.existsSync(RENDERER_DIST)) {
   app.use(express.static(RENDERER_DIST))
 }
 
-// Multer
 const storage = multer.diskStorage({
   destination: UPLOADS_DIR,
   filename: (req, file, cb) => cb(null, `${uuidv4()}.pdf`),
 })
 const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } })
 
+// ─── Pure-JS PDF renderer (pdfjs-dist + @napi-rs/canvas, no poppler needed) ──
+async function getPdfPageCount(pdfPath) {
+  try {
+    const { getDocument } = await import('pdfjs-dist')
+    const workerPath = new URL(
+      'file://' + path.join(__dirname, '..', 'node_modules', 'pdfjs-dist', 'build', 'pdf.worker.mjs')
+    ).href
+    const { GlobalWorkerOptions } = await import('pdfjs-dist')
+    GlobalWorkerOptions.workerSrc = workerPath
+    const data = new Uint8Array(fs.readFileSync(pdfPath))
+    const doc = await getDocument({ data, useSystemFonts: false, standardFontDataUrl: STANDARD_FONTS_DIR }).promise
+    const count = doc.numPages
+    await doc.destroy()
+    return count
+  } catch (e) {
+    console.error('getPdfPageCount error:', e.message)
+    return 1
+  }
+}
+
+async function renderPages(pdfPath, statementId) {
+  const pagesDir = path.join(UPLOADS_DIR, `pages_${statementId}`)
+  if (!fs.existsSync(pagesDir)) fs.mkdirSync(pagesDir, { recursive: true })
+  try {
+    const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist')
+    const { createCanvas } = require('@napi-rs/canvas')
+
+    const workerPath = new URL(
+      'file://' + path.join(__dirname, '..', 'node_modules', 'pdfjs-dist', 'build', 'pdf.worker.mjs')
+    ).href
+    GlobalWorkerOptions.workerSrc = workerPath
+
+    const canvasFactory = {
+      create(w, h) { const c = createCanvas(w, h); return { canvas: c, context: c.getContext('2d') } },
+      reset(cc, w, h) { cc.canvas.width = w; cc.canvas.height = h },
+      destroy(cc) { cc.canvas.width = 0; cc.canvas.height = 0 },
+    }
+
+    const SCALE = 1.5
+    const data = new Uint8Array(fs.readFileSync(pdfPath))
+    const doc = await getDocument({
+      data,
+      useSystemFonts: false,
+      standardFontDataUrl: STANDARD_FONTS_DIR,
+      canvasFactory,
+    }).promise
+
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i)
+      const viewport = page.getViewport({ scale: SCALE })
+      const width  = Math.round(viewport.width)
+      const height = Math.round(viewport.height)
+
+      const canvas = createCanvas(width, height)
+      const ctx = canvas.getContext('2d')
+      ctx.fillStyle = 'white'
+      ctx.fillRect(0, 0, width, height)
+
+      await page.render({ canvasContext: ctx, viewport, canvasFactory }).promise
+
+      const png = await canvas.encode('png')
+      const pageNum = String(i).padStart(4, '0')
+      fs.writeFileSync(path.join(pagesDir, `page-${pageNum}.png`), png)
+      page.cleanup()
+    }
+
+    await doc.destroy()
+    console.log(`Rendered ${doc.numPages} pages for statement ${statementId}`)
+  } catch (e) {
+    console.error('renderPages error:', e.message)
+    throw e
+  }
+}
+
 // ─── Statements ───────────────────────────────────────────────────────────────
-
 app.get('/api/statements', (req, res) => res.json(readDb().statements))
-
 app.get('/api/statements/:id', (req, res) => {
   const stmt = readDb().statements.find(s => s.id === req.params.id)
   if (!stmt) return res.status(404).json({ error: 'Not found' })
   res.json(stmt)
 })
-
 app.post('/api/statements/upload', upload.array('files'), async (req, res) => {
   const db = readDb()
   const created = []
   for (const file of req.files) {
-    let pageCount = 1
-    try {
-      const { stdout } = await execAsync(`pdfinfo "${file.path}" 2>/dev/null | grep Pages | awk '{print $2}'`)
-      pageCount = parseInt(stdout.trim()) || 1
-    } catch {}
+    const pageCount = await getPdfPageCount(file.path)
     const stmt = {
       id: uuidv4(), filename: file.filename, originalName: file.originalname,
       pageCount, uploadedAt: new Date().toISOString(), status: 'uploaded',
@@ -87,12 +142,13 @@ app.post('/api/statements/upload', upload.array('files'), async (req, res) => {
     }
     db.statements.push(stmt)
     created.push(stmt)
-    renderPages(file.path, stmt.id).catch(console.error)
+    renderPages(file.path, stmt.id).catch(e => {
+      console.error('Background render failed:', e.message)
+    })
   }
   writeDb(db)
   res.json(created)
 })
-
 app.delete('/api/statements/:id', (req, res) => {
   const db = readDb()
   const stmt = db.statements.find(s => s.id === req.params.id)
@@ -104,29 +160,14 @@ app.delete('/api/statements/:id', (req, res) => {
       fs.rmdirSync(pagesDir)
     }
   }
-  db.statements = db.statements.filter(s => s.id !== req.params.id)
-  db.regions = db.regions.filter(r => r.statementId !== req.params.id)
+  db.statements  = db.statements.filter(s => s.id !== req.params.id)
+  db.regions     = db.regions.filter(r => r.statementId !== req.params.id)
   db.transactions = db.transactions.filter(t => t.statementId !== req.params.id)
   writeDb(db)
   res.json({ success: true })
 })
 
 // ─── Page images ──────────────────────────────────────────────────────────────
-
-async function renderPages(pdfPath, statementId) {
-  const pagesDir = path.join(UPLOADS_DIR, `pages_${statementId}`)
-  if (!fs.existsSync(pagesDir)) fs.mkdirSync(pagesDir, { recursive: true })
-  try {
-    await execAsync(`"${PDFTOPPM}" -r 150 -png "${pdfPath}" "${path.join(pagesDir, 'page')}"`)
-  } catch (e) {
-    console.error('Page render error:', e.message)
-    // Fallback: try system pdftoppm
-    try {
-      await execAsync(`pdftoppm -r 150 -png "${pdfPath}" "${path.join(pagesDir, 'page')}"`)
-    } catch {}
-  }
-}
-
 app.get('/api/statements/:id/page/:pageIndex', (req, res) => {
   const { id, pageIndex } = req.params
   const pagesDir = path.join(UPLOADS_DIR, `pages_${id}`)
@@ -137,7 +178,6 @@ app.get('/api/statements/:id/page/:pageIndex', (req, res) => {
   }
   res.status(404).json({ error: 'Page not rendered yet' })
 })
-
 app.get('/api/statements/:id/page-status', (req, res) => {
   const pagesDir = path.join(UPLOADS_DIR, `pages_${req.params.id}`)
   const count = fs.existsSync(pagesDir)
@@ -147,7 +187,6 @@ app.get('/api/statements/:id/page-status', (req, res) => {
 })
 
 // ─── Regions ──────────────────────────────────────────────────────────────────
-
 app.get('/api/regions/:statementId', (req, res) => {
   res.json(readDb().regions.filter(r => r.statementId === req.params.statementId))
 })
@@ -173,32 +212,31 @@ app.delete('/api/regions/:id', (req, res) => {
   res.json({ success: true })
 })
 
-// ─── LLM Extraction ───────────────────────────────────────────────────────────
-
+// ─── AI Extraction ────────────────────────────────────────────────────────────
 async function extractWithLLM(imageBase64, regions, settings) {
   const regionDesc = regions.length
-    ? regions.map(r => `- ${r.label} (${r.type}): x=${Math.round(r.x)}, y=${Math.round(r.y)}, w=${Math.round(r.width)}, h=${Math.round(r.height)}`).join('\n')
-    : '(No regions defined — extract all visible transactions from the page)'
+    ? `The user has marked these regions:\n${regions.map(r => `- ${r.type}: "${r.label || r.type}" at page coords (${Math.round(r.x)},${Math.round(r.y)}) size ${Math.round(r.width)}x${Math.round(r.height)}`).join('\n')}\nFocus on the "detail rows" region for transactions.`
+    : 'No regions marked — extract all visible transactions from the full page.'
 
-  const prompt = `You are analyzing a bank statement image. Extract ALL transaction rows from the detail rows area.
+  const prompt = `You are a bank statement parser. Extract all financial transactions from this bank statement page image.
 
-Defined regions:
 ${regionDesc}
 
-Return a JSON array of transaction objects with EXACTLY these fields:
-- date: string (YYYY-MM-DD or as shown, e.g. "2025-05-01")
-- description: string (full transaction description/payee)
-- debit: number or null (withdrawal amount, digits only, no $ sign)
-- credit: number or null (deposit/credit amount, digits only, no $ sign)
-- balance: number or null (running balance, digits only, no $ sign)
+Return ONLY a JSON array of transaction objects with these exact fields:
+- date: string (MM/DD/YYYY format)
+- description: string
+- debit: number or null (withdrawals/debits, positive number)
+- credit: number or null (deposits/credits, positive number)
+- balance: number or null (running balance)
 
 Rules:
-- Include ALL transaction rows, even partial ones
-- Do NOT include header rows, summary rows, or section titles
-- Numbers must be plain floats (e.g. 1234.56), not strings
-- Return ONLY the JSON array, no explanation or markdown
+- Include every transaction row, including beginning/ending balance rows
+- Parse dollar amounts as plain numbers (no $ or commas)
+- If a field is not present, use null
+- Return [] if no transactions found
+- Return ONLY the JSON array, no other text
 
-Example: [{"date":"2025-05-05","description":"INCOMING FEDWIRE TRANSFER","debit":null,"credit":24902.27,"balance":26888.66}]`
+Example: [{"date":"05/01/2025","description":"BEGINNING BALANCE","debit":null,"credit":null,"balance":1986.39}]`
 
   if (settings.aiProvider === 'openai') {
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -206,11 +244,11 @@ Example: [{"date":"2025-05-05","description":"INCOMING FEDWIRE TRANSFER","debit"
       headers: { 'Authorization': `Bearer ${settings.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'gpt-4o',
+        max_tokens: 4096,
         messages: [{ role: 'user', content: [
           { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}`, detail: 'high' } },
           { type: 'text', text: prompt },
         ]}],
-        max_tokens: 4096,
       }),
     })
     if (!resp.ok) { const e = await resp.json(); throw new Error(e.error?.message || 'OpenAI error') }
@@ -225,7 +263,8 @@ Example: [{"date":"2025-05-05","description":"INCOMING FEDWIRE TRANSFER","debit"
       method: 'POST',
       headers: { 'x-api-key': settings.apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022', max_tokens: 4096,
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 4096,
         messages: [{ role: 'user', content: [
           { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageBase64 } },
           { type: 'text', text: prompt },
@@ -256,7 +295,6 @@ Example: [{"date":"2025-05-05","description":"INCOMING FEDWIRE TRANSFER","debit"
 
 async function autoCategorize(transactions, settings) {
   if (!transactions.length) return transactions
-  // Keyword fallback (always works without API)
   const keyword = t => {
     const d = (t.description || '').toLowerCase()
     if (/payroll|salary|wages|direct dep/i.test(d)) return 'Payroll & Income'
@@ -275,14 +313,11 @@ async function autoCategorize(transactions, settings) {
     if (/refund|reversal|credit adj/i.test(d)) return 'Refunds & Credits'
     return 'Other'
   }
-
-  // Try AI categorization if key available
   if (settings.apiKey || settings.aiProvider === 'ollama') {
     try {
       const descriptions = transactions.map(t => t.description).join('\n')
       const categories = ['Payroll & Income','Transfers','Vendor Payments','Utilities','Rent & Lease','Insurance','Banking Fees','Tax Payments','Loan Payments','Office Supplies','Travel & Transport','Meals & Entertainment','Software & Subscriptions','Marketing & Advertising','Professional Services','Equipment & Hardware','Refunds & Credits','Other']
       const catPrompt = `Categorize each bank transaction description into one of: ${categories.join(', ')}.\n\nDescriptions (one per line):\n${descriptions}\n\nReturn a JSON array of category strings in the same order. Example: ["Transfers","Banking Fees"]`
-
       let content = ''
       if (settings.aiProvider === 'openai') {
         const r = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -310,7 +345,6 @@ async function autoCategorize(transactions, settings) {
       console.error('AI categorization failed, using keywords:', e.message)
     }
   }
-
   return transactions.map(t => ({ ...t, category: keyword(t) }))
 }
 
@@ -319,26 +353,20 @@ app.post('/api/extract/:statementId', async (req, res) => {
   const settings = readSettings()
   const stmt = db.statements.find(s => s.id === req.params.statementId)
   if (!stmt) return res.status(404).json({ error: 'Statement not found' })
-
   stmt.status = 'processing'
   writeDb(db)
-
   try {
     const pagesDir = path.join(UPLOADS_DIR, `pages_${stmt.id}`)
-    if (!fs.existsSync(pagesDir) || !fs.readdirSync(pagesDir).length) {
+    if (!fs.existsSync(pagesDir) || !fs.readdirSync(pagesDir).filter(f => f.endsWith('.png')).length) {
       await renderPages(path.join(UPLOADS_DIR, stmt.filename), stmt.id)
     }
-
     const pageFiles = fs.existsSync(pagesDir)
       ? fs.readdirSync(pagesDir).filter(f => f.endsWith('.png')).sort().map(f => path.join(pagesDir, f))
       : []
-
     const regions = db.regions.filter(r => r.statementId === stmt.id)
     db.transactions = db.transactions.filter(t => t.statementId !== stmt.id)
-
     let all = []
     let rowIndex = 0
-
     for (let pi = 0; pi < pageFiles.length; pi++) {
       if (!fs.existsSync(pageFiles[pi])) continue
       const imageBase64 = fs.readFileSync(pageFiles[pi]).toString('base64')
@@ -350,8 +378,8 @@ app.post('/api/extract/:statementId', async (req, res) => {
           all.push({
             id: uuidv4(), statementId: stmt.id, pageIndex: pi,
             date: tx.date || '', description: tx.description || '',
-            debit: typeof tx.debit === 'number' ? tx.debit : null,
-            credit: typeof tx.credit === 'number' ? tx.credit : null,
+            debit:   typeof tx.debit   === 'number' ? tx.debit   : null,
+            credit:  typeof tx.credit  === 'number' ? tx.credit  : null,
             balance: typeof tx.balance === 'number' ? tx.balance : null,
             category: 'Other', notes: '', rowIndex: rowIndex++,
           })
@@ -361,7 +389,6 @@ app.post('/api/extract/:statementId', async (req, res) => {
         if (!settings.apiKey && settings.aiProvider !== 'ollama') throw e
       }
     }
-
     all = await autoCategorize(all, settings)
     db.transactions.push(...all)
     stmt.status = 'done'
@@ -377,7 +404,6 @@ app.post('/api/extract/:statementId', async (req, res) => {
 })
 
 // ─── Transactions ─────────────────────────────────────────────────────────────
-
 app.get('/api/transactions', (req, res) => {
   const db = readDb()
   const txs = req.query.statementId
@@ -411,16 +437,13 @@ app.delete('/api/transactions/:id', (req, res) => {
 })
 
 // ─── Export ───────────────────────────────────────────────────────────────────
-
 app.get('/api/export/excel', async (req, res) => {
   const XLSX = require('xlsx')
   const db = readDb()
   const { statementId } = req.query
-  const txs = statementId ? db.transactions.filter(t => t.statementId === statementId) : db.transactions
+  const txs   = statementId ? db.transactions.filter(t => t.statementId === statementId) : db.transactions
   const stmts = statementId ? db.statements.filter(s => s.id === statementId) : db.statements
-
   const wb = XLSX.utils.book_new()
-
   for (const stmt of stmts) {
     const rows = txs.filter(t => t.statementId === stmt.id).map(t => ({
       Date: t.date, Description: t.description,
@@ -428,7 +451,6 @@ app.get('/api/export/excel', async (req, res) => {
       Category: t.category, Notes: t.notes,
     }))
     const ws = XLSX.utils.json_to_sheet(rows)
-    // Style header row
     const range = XLSX.utils.decode_range(ws['!ref'] || 'A1')
     for (let c = range.s.c; c <= range.e.c; c++) {
       const cell = ws[XLSX.utils.encode_cell({ r: 0, c })]
@@ -436,20 +458,16 @@ app.get('/api/export/excel', async (req, res) => {
     }
     XLSX.utils.book_append_sheet(wb, ws, stmt.originalName.replace('.pdf', '').slice(0, 31))
   }
-
-  // Combined sheet
   const allRows = txs.map(t => {
     const s = db.statements.find(s => s.id === t.statementId)
     return { Statement: s?.originalName || '', Date: t.date, Description: t.description, Debit: t.debit, Credit: t.credit, Balance: t.balance, Category: t.category, Notes: t.notes }
   })
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(allRows), 'All Transactions')
-
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   res.setHeader('Content-Disposition', 'attachment; filename="bank_statements.xlsx"')
   res.send(buf)
 })
-
 app.get('/api/export/csv', (req, res) => {
   const db = readDb()
   const txs = req.query.statementId
@@ -467,19 +485,16 @@ app.get('/api/export/csv', (req, res) => {
 })
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
-
 app.get('/api/settings', (req, res) => res.json(readSettings()))
 app.post('/api/settings', (req, res) => { writeSettings(req.body); res.json(req.body) })
 
 // ─── SPA fallback ─────────────────────────────────────────────────────────────
-
 if (fs.existsSync(RENDERER_DIST)) {
   app.get('*', (req, res) => res.sendFile(path.join(RENDERER_DIST, 'index.html')))
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-
 const PORT = parseInt(process.env.PORT || '4000')
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`BSS server running on http://localhost:${PORT}`)
+  console.log(`BSS server v1.1.3 running on http://localhost:${PORT}`)
 })
