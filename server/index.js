@@ -10,8 +10,22 @@ const UPLOADS_DIR   = process.env.BSS_UPLOADS_DIR || path.join(__dirname, '..', 
 const DATA_DIR      = process.env.BSS_DATA_DIR    || path.join(__dirname, '..', 'data')
 const RENDERER_DIST = path.join(__dirname, '..', 'renderer', 'dist')
 
-// Standard fonts path for pdfjs-dist (bundled with the package)
-const STANDARD_FONTS_DIR = path.join(__dirname, '..', 'node_modules', 'pdfjs-dist', 'standard_fonts') + path.sep
+// Resolve node_modules — works in dev (../node_modules) AND packaged Electron (resources/app/node_modules)
+function resolveNodeModules() {
+  const candidates = [
+    path.join(__dirname, '..', 'node_modules'),
+    path.join(__dirname, '..', '..', 'node_modules'),
+    path.join(process.resourcesPath || '', 'app', 'node_modules'),
+    path.join(process.resourcesPath || '', 'node_modules'),
+  ]
+  for (const p of candidates) {
+    if (fs.existsSync(path.join(p, 'pdfjs-dist'))) return p
+  }
+  return path.join(__dirname, '..', 'node_modules')
+}
+const NODE_MODULES_DIR = resolveNodeModules()
+console.log('[Server] node_modules resolved to:', NODE_MODULES_DIR)
+const STANDARD_FONTS_DIR = path.join(NODE_MODULES_DIR, 'pdfjs-dist', 'standard_fonts') + path.sep
 
 for (const dir of [UPLOADS_DIR, DATA_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -52,11 +66,8 @@ const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } })
 // ─── Pure-JS PDF renderer (pdfjs-dist + @napi-rs/canvas, no poppler needed) ──
 async function getPdfPageCount(pdfPath) {
   try {
-    const { getDocument } = await import('pdfjs-dist')
-    const workerPath = new URL(
-      'file://' + path.join(__dirname, '..', 'node_modules', 'pdfjs-dist', 'build', 'pdf.worker.mjs')
-    ).href
-    const { GlobalWorkerOptions } = await import('pdfjs-dist')
+    const { getDocument, GlobalWorkerOptions } = require(path.join(NODE_MODULES_DIR, 'pdfjs-dist', 'legacy', 'build', 'pdf.mjs'))
+    const workerPath = 'file://' + path.join(NODE_MODULES_DIR, 'pdfjs-dist', 'legacy', 'build', 'pdf.worker.mjs')
     GlobalWorkerOptions.workerSrc = workerPath
     const data = new Uint8Array(fs.readFileSync(pdfPath))
     const doc = await getDocument({ data, useSystemFonts: false, standardFontDataUrl: STANDARD_FONTS_DIR }).promise
@@ -73,12 +84,9 @@ async function renderPages(pdfPath, statementId) {
   const pagesDir = path.join(UPLOADS_DIR, `pages_${statementId}`)
   if (!fs.existsSync(pagesDir)) fs.mkdirSync(pagesDir, { recursive: true })
   try {
-    const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist')
-    const { createCanvas } = require('@napi-rs/canvas')
-
-    const workerPath = new URL(
-      'file://' + path.join(__dirname, '..', 'node_modules', 'pdfjs-dist', 'build', 'pdf.worker.mjs')
-    ).href
+    const { getDocument, GlobalWorkerOptions } = require(path.join(NODE_MODULES_DIR, 'pdfjs-dist', 'legacy', 'build', 'pdf.mjs'))
+    const { createCanvas } = require(path.join(NODE_MODULES_DIR, '@napi-rs', 'canvas'))
+    const workerPath = 'file://' + path.join(NODE_MODULES_DIR, 'pdfjs-dist', 'legacy', 'build', 'pdf.worker.mjs')
     GlobalWorkerOptions.workerSrc = workerPath
 
     const canvasFactory = {

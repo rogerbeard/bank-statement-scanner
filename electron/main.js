@@ -93,21 +93,11 @@ function startServer() {
   return new Promise((resolve, reject) => {
     const serverPath = getServerPath()
 
-    // Find pdftoppm — check bundled bin first, then system PATH
-    let pdftoppmPath = 'pdftoppm'
-    const bundledBin = path.join(
-      isDev ? path.join(appRoot, 'build-resources', 'bin', 'mac') : process.resourcesPath,
-      'bin',
-      'pdftoppm'
-    )
-    if (fs.existsSync(bundledBin)) pdftoppmPath = bundledBin
-
     const env = {
       ...process.env,
       PORT: String(SERVER_PORT),
       BSS_UPLOADS_DIR: uploadsDir,
       BSS_DATA_DIR: dataDir,
-      BSS_PDFTOPPM: pdftoppmPath,
       NODE_ENV: isDev ? 'development' : 'production',
     }
 
@@ -121,7 +111,7 @@ function startServer() {
     serverProcess.stderr.on('data', d => console.error('[Server ERR]', d.toString().trim()))
     serverProcess.on('error', reject)
 
-    // Poll until server is ready (max 20s)
+    // Poll until server is ready (max 60s)
     const start = Date.now()
     const poll = setInterval(() => {
       http.get(`http://localhost:${SERVER_PORT}/api/settings`, res => {
@@ -130,9 +120,9 @@ function startServer() {
           resolve()
         }
       }).on('error', () => {
-        if (Date.now() - start > 20000) {
+        if (Date.now() - start > 60000) {
           clearInterval(poll)
-          reject(new Error('Server failed to start within 20s'))
+          reject(new Error('Server failed to start within 60s'))
         }
       })
     }, 400)
@@ -289,8 +279,8 @@ app.whenReady().then(async () => {
     dialog.showErrorBox(
       'Bank Statement Scanner — Startup Error',
       `Failed to start the embedded server:\n\n${err.message}\n\n` +
-      'Make sure poppler is installed:\n  brew install poppler\n\n' +
-      'Then relaunch the application.'
+      'Please try relaunching the application.\n\n' +
+      'If the problem persists, reinstall the app.'
     )
     app.quit()
   }
