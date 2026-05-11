@@ -20,7 +20,7 @@
     "pack": "npm run build:renderer && electron-builder --mac --dir",
     "start": "PORT=47291 node server/index.js",
     "start:browser": "bash start.sh",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "echo 'skipping install-app-deps'"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.44",
@@ -42,6 +42,8 @@
     "appId": "com.bankstatementscanner.app",
     "productName": "Bank Statement Scanner",
     "copyright": "Copyright © 2026 Bank Statement Scanner",
+    "npmRebuild": false,
+    "buildDependenciesFromSource": false,
     "directories": {
       "output": "dist-electron",
       "buildResources": "build-resources"
@@ -55,15 +57,7 @@
       "!**/*.map",
       "!**/node_modules/.cache"
     ],
-    "extraResources": [
-      {
-        "from": "build-resources/bin/${os}",
-        "to": "bin",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
+
     "mac": {
       "category": "public.app-category.finance",
       "icon": "build-resources/icon.icns",
@@ -89,7 +83,7 @@
       "entitlementsInherit": "build-resources/entitlements.mac.plist"
     },
     "dmg": {
-      "title": "Bank Statement Scanner 1.1.2",
+      "title": "Bank Statement Scanner 1.1.3",
       "icon": "build-resources/icon.icns",
       "background": "build-resources/dmg-background.png",
       "window": {
