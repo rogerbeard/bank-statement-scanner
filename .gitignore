@@ -1,0 +1,9 @@
+node_modules/
+renderer/node_modules/
+renderer/dist/
+dist-electron/
+uploads/
+data/
+*.log
+.DS_Store
+*.icns

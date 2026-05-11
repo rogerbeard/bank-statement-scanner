@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 420px; height: 280px;
+      background: #0a1628;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      font-family: 'SF Mono', 'JetBrains Mono', 'Courier New', monospace;
+      color: #e8f4ff;
+      border: 1px solid #1e3a5f;
+      border-radius: 12px;
+      overflow: hidden;
+      position: relative;
+    }
+    /* Blueprint grid */
+    body::before {
+      content: '';
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(rgba(74,144,217,0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(74,144,217,0.06) 1px, transparent 1px);
+      background-size: 28px 28px;
+      pointer-events: none;
+    }
+    .logo {
+      width: 56px; height: 56px;
+      border: 2px solid #4a90d9;
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 20px;
+      position: relative;
+    }
+    .logo svg { color: #4a90d9; }
+    .title {
+      font-size: 18px; font-weight: 700;
+      letter-spacing: 0.05em;
+      color: #e8f4ff;
+      margin-bottom: 6px;
+    }
+    .subtitle {
+      font-size: 11px; color: #4a90d9;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-bottom: 32px;
+    }
+    .bar-wrap {
+      width: 200px; height: 2px;
+      background: #1e3a5f;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .bar {
+      height: 100%;
+      background: linear-gradient(90deg, #4a90d9, #00e5a0);
+      border-radius: 2px;
+      animation: load 2.5s ease-in-out infinite;
+    }
+    @keyframes load {
+      0% { width: 0%; margin-left: 0; }
+      50% { width: 70%; margin-left: 0; }
+      100% { width: 0%; margin-left: 100%; }
+    }
+    .status {
+      margin-top: 14px;
+      font-size: 10px;
+      color: #4a90d9;
+      letter-spacing: 0.1em;
+      animation: blink 1.4s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
+    .corner { position: absolute; width: 12px; height: 12px; border-color: #4a90d9; border-style: solid; }
+    .tl { top: 12px; left: 12px; border-width: 1px 0 0 1px; }
+    .tr { top: 12px; right: 12px; border-width: 1px 1px 0 0; }
+    .bl { bottom: 12px; left: 12px; border-width: 0 0 1px 1px; }
+    .br { bottom: 12px; right: 12px; border-width: 0 1px 1px 0; }
+  </style>
+</head>
+<body>
+  <div class="corner tl"></div>
+  <div class="corner tr"></div>
+  <div class="corner bl"></div>
+  <div class="corner br"></div>
+  <div class="logo">
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <rect x="2" y="3" width="20" height="14" rx="2"/>
+      <path d="M8 21h8M12 17v4"/>
+      <path d="M7 8h10M7 11h6"/>
+    </svg>
+  </div>
+  <div class="title">Bank Statement Scanner</div>
+  <div class="subtitle">AI-Powered · Local · Secure</div>
+  <div class="bar-wrap"><div class="bar"></div></div>
+  <div class="status">INITIALIZING SERVER...</div>
+</body>
+</html>

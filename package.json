@@ -1,0 +1,98 @@
+{
+  "name": "bank-statement-scanner",
+  "productName": "Bank Statement Scanner",
+  "version": "1.0.0",
+  "description": "AI-powered bank statement PDF scanner and data grid generator",
+  "main": "electron/main.js",
+  "author": {
+    "name": "Bank Statement Scanner"
+  },
+  "license": "MIT",
+  "scripts": {
+    "install:all": "npm install && cd renderer && npm install",
+    "dev": "concurrently --kill-others \"npm run server:dev\" \"npm run renderer:dev\" \"wait-on http://localhost:5173 && electron .\"",
+    "server:dev": "PORT=47291 node server/index.js",
+    "renderer:dev": "cd renderer && npm run dev",
+    "build:renderer": "cd renderer && npm run build",
+    "build": "npm run build:renderer && electron-builder --mac --x64 --arm64",
+    "dist": "npm run build:renderer && electron-builder --mac",
+    "dist:dmg": "npm run build:renderer && electron-builder --mac dmg",
+    "pack": "npm run build:renderer && electron-builder --mac --dir",
+    "start": "PORT=47291 node server/index.js",
+    "start:browser": "bash start.sh",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "concurrently": "^8.2.2",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "multer": "^2.0.0",
+    "uuid": "^11.0.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.bankstatementscanner.app",
+    "productName": "Bank Statement Scanner",
+    "copyright": "Copyright © 2025 Bank Statement Scanner",
+    "directories": {
+      "output": "dist-electron",
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "renderer/dist/**/*",
+      "!renderer/node_modules",
+      "!renderer/src",
+      "!**/*.map",
+      "!**/node_modules/.cache"
+    ],
+    "extraResources": [
+      {
+        "from": "build-resources/bin/${os}",
+        "to": "bin",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.finance",
+      "icon": "build-resources/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build-resources/entitlements.mac.plist",
+      "entitlementsInherit": "build-resources/entitlements.mac.plist"
+    },
+    "dmg": {
+      "title": "Bank Statement Scanner",
+      "icon": "build-resources/icon.icns",
+      "background": "build-resources/dmg-background.png",
+      "window": {
+        "width": 660,
+        "height": 400
+      },
+      "contents": [
+        { "x": 180, "y": 170, "type": "file" },
+        { "x": 480, "y": 170, "type": "link", "path": "/Applications" }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
