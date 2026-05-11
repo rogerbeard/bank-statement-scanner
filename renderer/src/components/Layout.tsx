@@ -41,7 +41,7 @@ export default function Layout() {
           {/* Version tag */}
           <div className="mt-3 flex items-center gap-2">
             <div className="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse" />
-            <span className="text-[10px] font-mono text-blueprint-dim">v1.0.0 · LOCAL</span>
+            <span className="text-[10px] font-mono text-blueprint-dim">v1.1.2 · LOCAL</span>
           </div>
         </div>
 
@@ -125,6 +125,7 @@ export default function Layout() {
               <div className="w-1.5 h-1.5 rounded-full bg-blueprint-accent" />
               <span>LOCAL MODE</span>
             </div>
+            <div className="text-blueprint-accent/60 font-bold tracking-widest">v1.1.2</div>
           </div>
 
           {/* Corner marks */}

@@ -252,6 +252,11 @@ function buildMenu() {
 // ─── IPC ──────────────────────────────────────────────────────────────────────
 
 ipcMain.handle('get-app-version', () => app.getVersion())
+
+// Set window title with version
+app.on('browser-window-created', (_, win) => {
+  win.setTitle(`Bank Statement Scanner v${app.getVersion()}`)
+})
 ipcMain.handle('get-user-data-path', () => userDataDir)
 ipcMain.handle('open-data-folder', () => shell.openPath(userDataDir))
 

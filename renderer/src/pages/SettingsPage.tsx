@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
-import { Save, Eye, EyeOff, Info, Cpu, Zap, Globe } from 'lucide-react'
+import { Save, Eye, EyeOff, Info, Cpu, Zap, Globe, Tag, Calendar, Shield } from 'lucide-react'
 import { getSettings, saveSettings, type Settings } from '../lib/api'
 import { cn } from '../lib/utils'
+
+const APP_VERSION = '1.1.2'
+const BUILD_DATE = '2026'
 
 const PROVIDERS = [
   {
@@ -205,6 +208,37 @@ export default function SettingsPage() {
         <Save size={14} />
         {saving ? 'Saving...' : 'Save Settings'}
       </button>
+
+      {/* About / Version */}
+      <div className="bp-panel p-5 space-y-3">
+        <div className="bp-label">About</div>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between py-2 border-b border-blueprint-border">
+            <div className="flex items-center gap-2 text-xs font-mono text-blueprint-dim">
+              <Tag size={11} className="text-blueprint-accent" />
+              Version
+            </div>
+            <div className="text-xs font-mono font-bold text-blueprint-accent tracking-widest">v{APP_VERSION}</div>
+          </div>
+          <div className="flex items-center justify-between py-2 border-b border-blueprint-border">
+            <div className="flex items-center gap-2 text-xs font-mono text-blueprint-dim">
+              <Calendar size={11} className="text-blueprint-accent" />
+              Build Year
+            </div>
+            <div className="text-xs font-mono text-blueprint-white">{BUILD_DATE}</div>
+          </div>
+          <div className="flex items-center justify-between py-2">
+            <div className="flex items-center gap-2 text-xs font-mono text-blueprint-dim">
+              <Shield size={11} className="text-blueprint-accent" />
+              Data Storage
+            </div>
+            <div className="text-xs font-mono text-blueprint-white">Local · Never uploaded</div>
+          </div>
+        </div>
+        <div className="text-[11px] font-mono text-blueprint-dim pt-1">
+          Bank Statement Scanner v{APP_VERSION} · AI-Powered · Local · Secure
+        </div>
+      </div>
     </div>
   )
 }

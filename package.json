@@ -1,7 +1,7 @@
 {
   "name": "bank-statement-scanner",
   "productName": "Bank Statement Scanner",
-  "version": "1.0.0",
+  "version": "1.1.2",
   "description": "AI-powered bank statement PDF scanner and data grid generator",
   "main": "electron/main.js",
   "author": {
@@ -38,7 +38,7 @@
   "build": {
     "appId": "com.bankstatementscanner.app",
     "productName": "Bank Statement Scanner",
-    "copyright": "Copyright © 2025 Bank Statement Scanner",
+    "copyright": "Copyright © 2026 Bank Statement Scanner",
     "directories": {
       "output": "dist-electron",
       "buildResources": "build-resources"
@@ -78,7 +78,7 @@
       "entitlementsInherit": "build-resources/entitlements.mac.plist"
     },
     "dmg": {
-      "title": "Bank Statement Scanner",
+      "title": "Bank Statement Scanner 1.1.2",
       "icon": "build-resources/icon.icns",
       "background": "build-resources/dmg-background.png",
       "window": {
