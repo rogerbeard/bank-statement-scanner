@@ -4,6 +4,25 @@ const { spawn } = require('child_process')
 const http = require('http')
 const fs = require('fs')
 
+// ─── Single-instance lock ─────────────────────────────────────────────────────
+// Prevents infinite instance spawning — if another instance is already running,
+// focus it and quit this new one immediately.
+const gotTheLock = app.requestSingleInstanceLock()
+
+if (!gotTheLock) {
+  // Another instance is already running — quit silently
+  app.quit()
+  process.exit(0)
+}
+
+// When a second instance tries to launch, bring the existing window to front
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  }
+})
+
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -18,14 +37,55 @@ for (const dir of [uploadsDir, dataDir]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
 }
 
+// ─── Crash / loop guard ───────────────────────────────────────────────────────
+// Write a launch timestamp; if the app crashes on startup repeatedly,
+// this prevents an infinite relaunch loop.
+const lockFile = path.join(dataDir, '.launch_lock')
+const MAX_CRASH_COUNT = 3
+const CRASH_WINDOW_MS = 10000 // 10 seconds
+
+function checkLaunchSafety() {
+  try {
+    let record = { count: 0, firstLaunch: Date.now() }
+    if (fs.existsSync(lockFile)) {
+      try { record = JSON.parse(fs.readFileSync(lockFile, 'utf8')) } catch {}
+    }
+    const now = Date.now()
+    if (now - record.firstLaunch > CRASH_WINDOW_MS) {
+      // Reset window
+      record = { count: 1, firstLaunch: now }
+    } else {
+      record.count++
+    }
+    fs.writeFileSync(lockFile, JSON.stringify(record))
+    if (record.count > MAX_CRASH_COUNT) {
+      dialog.showErrorBox(
+        'Bank Statement Scanner — Startup Loop Detected',
+        'The app has crashed on startup multiple times.\n\n' +
+        'Please try reinstalling the application.\n\n' +
+        'If the problem persists, delete the app data folder:\n' +
+        userDataDir
+      )
+      app.quit()
+      return false
+    }
+    return true
+  } catch {
+    return true // Don't block launch on lock file errors
+  }
+}
+
+function clearLaunchLock() {
+  try { fs.unlinkSync(lockFile) } catch {}
+}
+
 // ─── Server ───────────────────────────────────────────────────────────────────
 
 let serverProcess = null
-const SERVER_PORT = 47291 // Unlikely-to-conflict port
+const SERVER_PORT = 47291
 
 function getServerPath() {
   if (isDev) return path.join(appRoot, 'server', 'index.js')
-  // In production, server is bundled in resources
   return path.join(process.resourcesPath, 'app', 'server', 'index.js')
 }
 
@@ -54,13 +114,14 @@ function startServer() {
     serverProcess = spawn(process.execPath, [serverPath], {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,
     })
 
     serverProcess.stdout.on('data', d => console.log('[Server]', d.toString().trim()))
     serverProcess.stderr.on('data', d => console.error('[Server ERR]', d.toString().trim()))
     serverProcess.on('error', reject)
 
-    // Poll until server is ready
+    // Poll until server is ready (max 20s)
     const start = Date.now()
     const poll = setInterval(() => {
       http.get(`http://localhost:${SERVER_PORT}/api/settings`, res => {
@@ -69,18 +130,18 @@ function startServer() {
           resolve()
         }
       }).on('error', () => {
-        if (Date.now() - start > 15000) {
+        if (Date.now() - start > 20000) {
           clearInterval(poll)
-          reject(new Error('Server failed to start within 15s'))
+          reject(new Error('Server failed to start within 20s'))
         }
       })
-    }, 300)
+    }, 400)
   })
 }
 
 function stopServer() {
   if (serverProcess) {
-    serverProcess.kill()
+    try { serverProcess.kill('SIGTERM') } catch {}
     serverProcess = null
   }
 }
@@ -90,6 +151,12 @@ function stopServer() {
 let mainWindow = null
 
 function createWindow() {
+  // Guard: don't create a second window if one already exists
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.focus()
+    return
+  }
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -116,6 +183,8 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => {
     mainWindow.show()
     if (isDev) mainWindow.webContents.openDevTools()
+    // Clear the crash lock once the window successfully shows
+    clearLaunchLock()
   })
 
   // Open external links in default browser
@@ -189,6 +258,9 @@ ipcMain.handle('open-data-folder', () => shell.openPath(userDataDir))
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  // Safety check — abort if crash loop detected
+  if (!checkLaunchSafety()) return
+
   buildMenu()
 
   // Show loading splash
@@ -205,17 +277,20 @@ app.whenReady().then(async () => {
 
   try {
     await startServer()
-    splash.close()
+    if (!splash.isDestroyed()) splash.close()
     createWindow()
   } catch (err) {
-    splash.close()
+    if (!splash.isDestroyed()) splash.close()
     dialog.showErrorBox(
       'Bank Statement Scanner — Startup Error',
-      `Failed to start the server:\n\n${err.message}\n\nPlease reinstall the application.`
+      `Failed to start the embedded server:\n\n${err.message}\n\n` +
+      'Make sure poppler is installed:\n  brew install poppler\n\n' +
+      'Then relaunch the application.'
     )
     app.quit()
   }
 
+  // macOS: re-create window when dock icon is clicked and no windows are open
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -226,9 +301,12 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', stopServer)
+app.on('before-quit', () => {
+  stopServer()
+  clearLaunchLock()
+})
 
-// Security: prevent new window creation
+// Security: prevent navigation to external URLs within the app window
 app.on('web-contents-created', (_, contents) => {
   contents.on('will-navigate', (event, url) => {
     const localUrl = `http://localhost:${SERVER_PORT}`
