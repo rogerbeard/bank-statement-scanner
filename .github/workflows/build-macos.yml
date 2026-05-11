@@ -49,12 +49,9 @@ jobs:
         run: cd renderer && npm run build
 
       # ── 7. Generate ICNS icon from PNG ───────────────────────────────────────
-      - name: Install Python dependencies for icon generation
-        run: pip3 install Pillow
-
       - name: Generate macOS ICNS icon
         run: |
-          python3 build-resources/gen_icon.py
+          # Use macOS sips to resize the existing PNG into all required iconset sizes
           mkdir -p /tmp/icon.iconset
           sips -z 16   16   build-resources/icon.png --out /tmp/icon.iconset/icon_16x16.png
           sips -z 32   32   build-resources/icon.png --out /tmp/icon.iconset/icon_16x16@2x.png
