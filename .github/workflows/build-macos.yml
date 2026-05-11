@@ -4,7 +4,6 @@ on:
   # Run automatically on every push to main/master
   push:
     branches: [main, master]
-    # Also run when you create a version tag (e.g. v1.0.0)
     tags:
       - 'v*'
   # Run manually from the GitHub Actions tab — no code push needed
@@ -19,6 +18,8 @@ jobs:
   build-macos:
     name: Build macOS DMG (Universal)
     runs-on: macos-latest
+    permissions:
+      contents: write   # required to create/update releases
 
     steps:
       # ── 1. Checkout ──────────────────────────────────────────────────────────
@@ -51,7 +52,6 @@ jobs:
       # ── 7. Generate ICNS icon from PNG ───────────────────────────────────────
       - name: Generate macOS ICNS icon
         run: |
-          # Use macOS sips to resize the existing PNG into all required iconset sizes
           mkdir -p /tmp/icon.iconset
           sips -z 16   16   build-resources/icon.png --out /tmp/icon.iconset/icon_16x16.png
           sips -z 32   32   build-resources/icon.png --out /tmp/icon.iconset/icon_16x16@2x.png
@@ -66,20 +66,32 @@ jobs:
           iconutil -c icns /tmp/icon.iconset -o build-resources/icon.icns
           echo "ICNS created: $(ls -lh build-resources/icon.icns)"
 
-      # ── 8. Build DMG (unsigned — no Apple Developer account required) ─────────
+      # ── 8. Determine version label ────────────────────────────────────────────
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="v${{ github.event.inputs.version }}"
+          else
+            VERSION="v1.0.0-build.$(date +'%Y%m%d%H%M%S')"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      # ── 9. Build DMG (unsigned) ───────────────────────────────────────────────
       - name: Build macOS DMG
         env:
-          # Unsigned build: users bypass Gatekeeper via
-          # System Settings → Privacy & Security → Open Anyway
           CSC_IDENTITY_AUTO_DISCOVERY: false
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run dist
 
-      # ── 9. List artifacts ────────────────────────────────────────────────────
+      # ── 10. List build output ─────────────────────────────────────────────────
       - name: List build output
         run: ls -lh dist-electron/
 
-      # ── 10. Upload as downloadable artifact (available for 30 days) ──────────
+      # ── 11. Upload as artifact (30-day backup) ────────────────────────────────
       - name: Upload DMG artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -90,36 +102,56 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      # ── 11. Create GitHub Release on version tags (e.g. git tag v1.0.0) ──────
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      # ── 12. Delete existing 'latest' release if it exists ────────────────────
+      - name: Delete existing latest release
+        if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --repo ${{ github.repository }} 2>/dev/null || true
+          git push origin :refs/tags/latest 2>/dev/null || true
+
+      # ── 13. Publish GitHub Release (always — permanent direct download) ───────
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Bank Statement Scanner ${{ github.ref_name }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && format('Bank Statement Scanner {0}', github.ref_name) || 'Bank Statement Scanner — Latest Build' }}
           body: |
-            ## Bank Statement Scanner ${{ github.ref_name }}
+            ## Bank Statement Scanner — Latest Build
 
-            ### Download
-            | Mac Type | File |
+            Built automatically from the latest code on `main`.
+
+            ### Download Your DMG
+
+            | Mac Type | File to Download |
             |---|---|
-            | Apple Silicon (M1/M2/M3/M4) | `*-arm64.dmg` |
-            | Intel Mac | `*-x64.dmg` |
+            | **Apple Silicon** (M1 / M2 / M3 / M4) | `Bank Statement Scanner-1.0.0-arm64.dmg` |
+            | **Intel Mac** | `Bank Statement Scanner-1.0.0-x64.dmg` |
 
             ### Install
-            1. Download the correct `.dmg` for your Mac
-            2. Open it and drag **Bank Statement Scanner** to **Applications**
-            3. First launch: **System Settings → Privacy & Security → Open Anyway**
+            1. Download the `.dmg` for your Mac type above
+            2. Open the `.dmg` → drag **Bank Statement Scanner** to **Applications**
+            3. First launch only: go to **System Settings → Privacy & Security → Open Anyway**
 
             ### Features
             - Upload multiple bank statement PDFs
             - Draw capture regions (Page Header / Group Header / Detail Rows)
-            - AI-powered transaction extraction (OpenAI / Anthropic / Ollama)
-            - Editable data grid with Excel + CSV export
-            - Dashboard with spending charts and balance timeline
+            - AI-powered transaction extraction (OpenAI / Anthropic / Ollama offline)
+            - Editable data grid with inline cell editing
+            - Combine or separate statement views
+            - Excel (.xlsx) and CSV export
+            - Dashboard with spending charts and balance over time
+
+            ### AI Setup
+            Open the app → **Settings** → choose your AI provider → enter API key → Save.
+            Supports OpenAI, Anthropic Claude, and Ollama (fully offline).
           files: |
             dist-electron/*.dmg
             dist-electron/*.zip
           draft: false
-          prerelease: false
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
